@@ -637,12 +637,10 @@ footer {
 const $ = id => document.getElementById(id);
 
 let qrGenerator = null;
-let currentBarcode = "";
 let lastQRText = "";
-let lastQRSize = 512;
 let scanReader = null;
-let qrBusy = false;
-let barBusy = false;
+let scanBusy = false;
+let lastGeneratedBarcode = "";
 let lastBarcodeText = "";
 let lastBarcodeFormat = "";
 
@@ -682,16 +680,25 @@ $("aboutModal").addEventListener("click", e => {
 });
 
 // ابزار انتخاب عکس و اسکن
-function previewImage(file, imgId) {
+async function previewImage(file, imgId) {
   const img = $(imgId);
-  if (img.dataset.objectUrl) {
-    URL.revokeObjectURL(img.dataset.objectUrl);
-  }
+  if (img.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
 
   const url = URL.createObjectURL(file);
   img.dataset.objectUrl = url;
-  img.src = url;
   img.style.display = "block";
+  img.src = url;
+
+  if (typeof img.decode === "function") {
+    await img.decode();
+  } else if (!img.complete || !img.naturalWidth) {
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error("IMAGE_LOAD"));
+    });
+  }
+
+  if (!img.naturalWidth || !img.naturalHeight) throw new Error("IMAGE_LOAD");
 }
 
 function getReader() {
@@ -712,28 +719,17 @@ async function decodeImage(file, kind) {
   const inputId = kind === "qr" ? "qrImage" : "barImage";
   const previewId = kind === "qr" ? "qrImagePreview" : "barImagePreview";
 
-  if ((kind === "qr" && qrBusy) || (kind === "bar" && barBusy)) return;
-
-  if (kind === "qr") qrBusy = true;
-  else barBusy = true;
+  if (scanBusy) return;
+  scanBusy = true;
 
   $(resultId).classList.add("hidden");
   $(statusId).textContent = "در حال خواندن تصویر...";
 
-  previewImage(file, previewId);
-
   try {
+    await previewImage(file, previewId);
     const reader = getReader();
     const img = $(previewId);
-
-    if (!img.complete) {
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-      });
-    }
-
-    const result = reader.decodeFromImageElement(img);
+    const result = await reader.decodeFromImageElement(img);
     const text = result.getText();
     const format = String(result.getBarcodeFormat());
 
@@ -742,7 +738,6 @@ async function decodeImage(file, kind) {
       $("qrOpen").disabled = !/^https?:\/\/\S+$/i.test(text.trim());
       $("qrReadResult").classList.remove("hidden");
       $("qrReadStatus").textContent = "QR Code با موفقیت خوانده شد.";
-      currentBarcode = text;
     } else {
       lastBarcodeText = text;
       lastBarcodeFormat = format;
@@ -752,15 +747,18 @@ async function decodeImage(file, kind) {
       $("barReadStatus").textContent = "بارکد با موفقیت خوانده شد.";
     }
   } catch (error) {
-    const message = error.message === "LIBRARY"
-      ? "کتابخانه اسکن بارگذاری نشده؛ اتصال اینترنت رو بررسی کن."
-      : "کدی پیدا نشد. عکس واضح‌تر، با نور بهتر و کد کامل انتخاب کن.";
-
+    console.error("Image decode failed:", error);
+    let message;
+    if (error.message === "LIBRARY") {
+      message = "کتابخانه اسکن بارگذاری نشده؛ اتصال اینترنت رو بررسی کن.";
+    } else if (error.message === "IMAGE_LOAD") {
+      message = "تصویر باز نشد. یک عکس دیگه انتخاب کن.";
+    } else {
+      message = "کدی پیدا نشد. عکس واضح‌تر، با نور بهتر و کد کامل انتخاب کن.";
+    }
     $(statusId).textContent = message;
   } finally {
-    if (kind === "qr") qrBusy = false;
-    else barBusy = false;
-
+    scanBusy = false;
     $(inputId).value = "";
   }
 }
@@ -842,7 +840,7 @@ function makeQR() {
     qrGenerator.append($("qrPreview"));
 
     lastQRText = text;
-    lastQRSize = size;
+    
     $("qrDownload").disabled = false;
     $("qrCopySource").disabled = false;
     toast("QR Code ساخته شد.");
@@ -911,7 +909,7 @@ function makeBarcode() {
     caption.textContent = value;
     $("barPreview").append(caption);
 
-    currentBarcode = value;
+    lastGeneratedBarcode = value;
     $("barDownload").disabled = false;
     $("barDownloadPNG").disabled = false;
 
@@ -997,7 +995,7 @@ $("barDownloadPNG").onclick = () => {
 
 ["barType","barColor","barBg","barWidth","barHeight","showText"].forEach(id => {
   $(id).addEventListener("change", () => {
-    if (currentBarcode && !$("barCreate").classList.contains("hidden")) {
+    if (lastGeneratedBarcode && !$("barCreate").classList.contains("hidden")) {
       makeBarcode();
     }
   });
